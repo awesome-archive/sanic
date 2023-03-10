@@ -1,18 +1,94 @@
+sudo: false
 language: python
-python:
-  - '3.5'
+cache:
+  directories:
+    - $HOME/.cache/pip
+matrix:
+  include:
+    - env: TOX_ENV=py37
+      python: 3.7
+      dist: xenial
+      sudo: true
+      name: "Python 3.7 with Extensions"
+    - env: TOX_ENV=py37-no-ext
+      python: 3.7
+      dist: xenial
+      sudo: true
+      name: "Python 3.7 without Extensions"
+    - env: TOX_ENV=py38
+      python: 3.8
+      dist: xenial
+      sudo: true
+      name: "Python 3.8 with Extensions"
+    - env: TOX_ENV=py38-no-ext
+      python: 3.8
+      dist: xenial
+      sudo: true
+      name: "Python 3.8 without Extensions"
+    - env: TOX_ENV=py39
+      python: 3.9
+      dist: bionic
+      sudo: true
+      name: "Python 3.9 with Extensions"
+    - env: TOX_ENV=py39-no-ext
+      python: 3.9
+      dist: bionic
+      sudo: true
+      name: "Python 3.9 without Extensions"
+    - env: TOX_ENV=type-checking
+      python: 3.7
+      name: "Python 3.7 Type checks"
+    - env: TOX_ENV=type-checking
+      python: 3.8
+      name: "Python 3.8 Type checks"
+    - env: TOX_ENV=type-checking
+      python: 3.9
+      dist: bionic
+      name: "Python 3.9 Type checks"
+    - env: TOX_ENV=security
+      python: 3.7
+      dist: xenial
+      sudo: true
+      name: "Python 3.7 Bandit security scan"
+    - env: TOX_ENV=security
+      python: 3.8
+      dist: xenial
+      sudo: true
+      name: "Python 3.8 Bandit security scan"
+    - env: TOX_ENV=security
+      python: 3.9
+      dist: bionic
+      sudo: true
+      name: "Python 3.9 Bandit security scan"
+    - env: TOX_ENV=docs
+      python: 3.7
+      dist: xenial
+      sudo: true
+      name: "Python 3.7 Documentation tests"
+    - env: TOX_ENV=pyNightly
+      python: "nightly"
+      name: "Python nightly with Extensions"
+    - env: TOX_ENV=pyNightly-no-ext
+      python: "nightly"
+      name: "Python nightly without Extensions"
+  allow_failures:
+    - env: TOX_ENV=pyNightly
+      python: "nightly"
+      name: "Python nightly with Extensions"
+    - env: TOX_ENV=pyNightly-no-ext
+      python: "nightly"
+      name: "Python nightly without Extensions"
 install:
-  - pip install -r requirements.txt
-  - pip install -r requirements-dev.txt
-  - python setup.py install
-  - pip install flake8
-  - pip install pytest
-before_script: flake8 sanic
-script: py.test -v tests
+  - pip install -U tox
+  - pip install codecov
+script: travis_retry tox -e $TOX_ENV
+after_success:
+  - codecov
 deploy:
   provider: pypi
-  user: channelcat
+  user: brewmaster
   password:
-    secure: jH4+Di2/qcBwWVhI5/3NYd/JuDDgf5/cF85h+oQnAjgwP6me3th9RS0PHL2gjKJrmyRgwrW7a3eSAityo5sQSlBloQCNrtCE30rkDiwtgoIxDW72NR/nE8nUkS9Utgy87eS+3B4NrO7ag4GTqO5ET8SQ4/MCiQwyUQATLXj2s2eTpQvqJeZG6YgoeFAOYvlR580yznXoOwldWlkiymJiWSdR/01lthtWCi40sYC/QoU7psODJ/tPcsqgQtQKyUVsci7mKvp3Y8ImkoO/POM01jYNsS9qLh5pKTNCEYxtyzC77whenCNHn7WReVidd56g1ADosbNo4yY/1D3VAvwjUnkQ0SzdBQfT7IIzccEuC0j1NXKPN97OX0a6XzyUMYJ1XiU3juTJOPxdYBPbsDM3imQiwrOh1faIf0HCgNTN+Lxe5l8obCH7kffNcVUhs2zI0+2t4MS5tjb/OVuYD/TFn+bM33DqzLctTOK/pGn6xefzZcdzb191LPo99Lof+4fo6jNUpb0UmcBu5ZJzxh0lGe8FPIK3UAG/hrYDDgjx8s8RtUJjcEUQz0659XffYx7DLlgHO7cWyfjrHD3yrLzDbYr5mAS4FR+4D917V7UL+on4SsKHN00UuMGPguqSYo/xYyPLnJU5XK0du4MIpsNMB8TtrJOIewOOfD32+AisPQ8=
+    secure: "GoawLwmbtJOgKB6AJ0ZSYUUnNwIoonseHBxaAUH3zu79TS/Afrq+yB3lsVaMSG0CbyDgN4FrfD1phT1NzbvZ1VcLIOTDtCrmpQ1kLDw+zwgF40ab8sp8fPkKVHHHfCCs1mjltHIpxQa5lZTJcAs6Bpi/lbUWWwYxFzSV8pHw4W4hY09EHUd2o+evLTSVxaploetSt725DJUYKICUr2eAtCC11IDnIW4CzBJEx6krVV3uhzfTJW0Ls17x0c6sdZ9icMnV/G9xO/eQH6RIHe4xcrWJ6cmLDNKoGAkJp+BKr1CeVVg7Jw/MzPjvZKL2/ki6Beue1y6GUIy7lOS7jPVaOEhJ23b0zQwFcLMZw+Tt+E3v6QfHk+B/WBBBnM3zUZed9UI+QyW8+lqLLt39sQX0FO0P3eaDh8qTXtUuon2jTyFMMAMTFRTNpJmpAzuBH9yeMmDeALPTh0HphI+BkoUl5q1QbWFYjjnZMH2CatApxpLybt9A7rwm//PbOG0TSI93GEKNQ4w5DYryKTfwHzRBptNSephJSuxZYEfJsmUtas5es1D7Fe0PkyjxNNSU+eO+8wsTlitLUsJO4k0jAgy+cEKdU7YJ3J0GZVXocSkrNnUfd2hQPcJ3UtEJx3hLqqr8EM7EZBAasc1yGHh36NFetclzFY24YPih0G1+XurhTys="
   on:
     tags: true
+  distributions: "sdist bdist_wheel"

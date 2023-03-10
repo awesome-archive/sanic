@@ -1,148 +1,188 @@
-import re
-from collections import defaultdict, namedtuple
 from functools import lru_cache
-from .config import Config
-from .exceptions import NotFound, InvalidUsage
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
-Route = namedtuple('Route', ['handler', 'methods', 'pattern', 'parameters'])
-Parameter = namedtuple('Parameter', ['name', 'cast'])
+from sanic_routing import BaseRouter  # type: ignore
+from sanic_routing.exceptions import NoMethod  # type: ignore
+from sanic_routing.exceptions import (
+    NotFound as RoutingNotFound,  # type: ignore
+)
+from sanic_routing.route import Route  # type: ignore
 
-REGEX_TYPES = {
-    'string': (str, r'[^/]+'),
-    'int': (int, r'\d+'),
-    'number': (float, r'[0-9\\.]+'),
-    'alpha': (str, r'[A-Za-z]+'),
-}
-
-
-def url_hash(url):
-    return url.count('/')
+from sanic.constants import HTTP_METHODS
+from sanic.exceptions import MethodNotSupported, NotFound, SanicException
+from sanic.models.handler_types import RouteHandler
 
 
-class RouteExists(Exception):
-    pass
+ROUTER_CACHE_SIZE = 1024
+ALLOWED_LABELS = ("__file_uri__",)
 
 
-class Router:
+class Router(BaseRouter):
     """
-    Router supports basic routing with parameters and method checks
-    Usage:
-        @sanic.route('/my/url/<my_parameter>', methods=['GET', 'POST', ...])
-        def my_route(request, my_parameter):
-            do stuff...
-
-    Parameters will be passed as keyword arguments to the request handling
-    function provided Parameters can also have a type by appending :type to
-    the <parameter>.  If no type is provided, a string is expected.  A regular
-    expression can also be passed in as the type
+    The router implementation responsible for routing a :class:`Request` object
+    to the appropriate handler.
     """
-    routes_static = None
-    routes_dynamic = None
-    routes_always_check = None
 
-    def __init__(self):
-        self.routes_all = {}
-        self.routes_static = {}
-        self.routes_dynamic = defaultdict(list)
-        self.routes_always_check = []
+    DEFAULT_METHOD = "GET"
+    ALLOWED_METHODS = HTTP_METHODS
 
-    def add(self, uri, methods, handler):
+    def _get(
+        self, path: str, method: str, host: Optional[str]
+    ) -> Tuple[Route, RouteHandler, Dict[str, Any]]:
+        try:
+            return self.resolve(
+                path=path,
+                method=method,
+                extra={"host": host},
+            )
+        except RoutingNotFound as e:
+            raise NotFound("Requested URL {} not found".format(e.path))
+        except NoMethod as e:
+            raise MethodNotSupported(
+                "Method {} not allowed for URL {}".format(method, path),
+                method=method,
+                allowed_methods=e.allowed_methods,
+            )
+
+    @lru_cache(maxsize=ROUTER_CACHE_SIZE)
+    def get(  # type: ignore
+        self, path: str, method: str, host: Optional[str]
+    ) -> Tuple[Route, RouteHandler, Dict[str, Any]]:
         """
-        Adds a handler to the route list
-        :param uri: Path to match
-        :param methods: Array of accepted method names.
-        If none are provided, any method is allowed
-        :param handler: Request handler function.
-        When executed, it should provide a response object.
-        :return: Nothing
+        Retrieve a `Route` object containg the details about how to handle
+        a response for a given request
+
+        :param request: the incoming request object
+        :type request: Request
+        :return: details needed for handling the request and returning the
+            correct response
+        :rtype: Tuple[ Route, RouteHandler, Dict[str, Any]]
         """
-        if uri in self.routes_all:
-            raise RouteExists("Route already registered: {}".format(uri))
+        return self._get(path, method, host)
 
-        # Dict for faster lookups of if method allowed
-        if methods:
-            methods = frozenset(methods)
+    def add(  # type: ignore
+        self,
+        uri: str,
+        methods: Iterable[str],
+        handler: RouteHandler,
+        host: Optional[Union[str, Iterable[str]]] = None,
+        strict_slashes: bool = False,
+        stream: bool = False,
+        ignore_body: bool = False,
+        version: Union[str, float, int] = None,
+        name: Optional[str] = None,
+        unquote: bool = False,
+        static: bool = False,
+    ) -> Union[Route, List[Route]]:
+        """
+        Add a handler to the router
 
-        parameters = []
-        properties = {"unhashable": None}
+        :param uri: the path of the route
+        :type uri: str
+        :param methods: the types of HTTP methods that should be attached,
+            example: ``["GET", "POST", "OPTIONS"]``
+        :type methods: Iterable[str]
+        :param handler: the sync or async function to be executed
+        :type handler: RouteHandler
+        :param host: host that the route should be on, defaults to None
+        :type host: Optional[str], optional
+        :param strict_slashes: whether to apply strict slashes, defaults
+            to False
+        :type strict_slashes: bool, optional
+        :param stream: whether to stream the response, defaults to False
+        :type stream: bool, optional
+        :param ignore_body: whether the incoming request body should be read,
+            defaults to False
+        :type ignore_body: bool, optional
+        :param version: a version modifier for the uri, defaults to None
+        :type version: Union[str, float, int], optional
+        :param name: an identifying name of the route, defaults to None
+        :type name: Optional[str], optional
+        :return: the route object
+        :rtype: Route
+        """
+        if version is not None:
+            version = str(version).strip("/").lstrip("v")
+            uri = "/".join([f"/v{version}", uri.lstrip("/")])
 
-        def add_parameter(match):
-            # We could receive NAME or NAME:PATTERN
-            name = match.group(1)
-            pattern = 'string'
-            if ':' in name:
-                name, pattern = name.split(':', 1)
+        params = dict(
+            path=uri,
+            handler=handler,
+            methods=methods,
+            name=name,
+            strict=strict_slashes,
+            unquote=unquote,
+        )
 
-            default = (str, pattern)
-            # Pull from pre-configured types
-            _type, pattern = REGEX_TYPES.get(pattern, default)
-            parameter = Parameter(name=name, cast=_type)
-            parameters.append(parameter)
-
-            # Mark the whole route as unhashable if it has the hash key in it
-            if re.search('(^|[^^]){1}/', pattern):
-                properties['unhashable'] = True
-
-            return '({})'.format(pattern)
-
-        pattern_string = re.sub(r'<(.+?)>', add_parameter, uri)
-        pattern = re.compile(r'^{}$'.format(pattern_string))
-
-        route = Route(
-            handler=handler, methods=methods, pattern=pattern,
-            parameters=parameters)
-
-        self.routes_all[uri] = route
-        if properties['unhashable']:
-            self.routes_always_check.append(route)
-        elif parameters:
-            self.routes_dynamic[url_hash(uri)].append(route)
+        if isinstance(host, str):
+            hosts = [host]
         else:
-            self.routes_static[uri] = route
+            hosts = host or [None]  # type: ignore
 
-    def get(self, request):
-        """
-        Gets a request handler based on the URL of the request, or raises an
-        error
-        :param request: Request object
-        :return: handler, arguments, keyword arguments
-        """
-        return self._get(request.url, request.method)
+        routes = []
 
-    @lru_cache(maxsize=Config.ROUTER_CACHE_SIZE)
-    def _get(self, url, method):
-        """
-        Gets a request handler based on the URL of the request, or raises an
-        error.  Internal method for caching.
-        :param url: Request URL
-        :param method: Request method
-        :return: handler, arguments, keyword arguments
-        """
-        # Check against known static routes
-        route = self.routes_static.get(url)
-        if route:
-            match = route.pattern.match(url)
-        else:
-            # Move on to testing all regex routes
-            for route in self.routes_dynamic[url_hash(url)]:
-                match = route.pattern.match(url)
-                if match:
-                    break
-            else:
-                # Lastly, check against all regex routes that cannot be hashed
-                for route in self.routes_always_check:
-                    match = route.pattern.match(url)
-                    if match:
-                        break
-                else:
-                    raise NotFound('Requested URL {} not found'.format(url))
+        for host in hosts:
+            if host:
+                params.update({"requirements": {"host": host}})
 
-        if route.methods and method not in route.methods:
-            raise InvalidUsage(
-                'Method {} not allowed for URL {}'.format(
-                    method, url), status_code=405)
+            route = super().add(**params)  # type: ignore
+            route.ctx.ignore_body = ignore_body
+            route.ctx.stream = stream
+            route.ctx.hosts = hosts
+            route.ctx.static = static
 
-        kwargs = {p.name: p.cast(value)
-                  for value, p
-                  in zip(match.groups(1), route.parameters)}
-        return route.handler, [], kwargs
+            routes.append(route)
+
+        if len(routes) == 1:
+            return routes[0]
+        return routes
+
+    @lru_cache(maxsize=ROUTER_CACHE_SIZE)
+    def find_route_by_view_name(self, view_name, name=None):
+        """
+        Find a route in the router based on the specified view name.
+
+        :param view_name: string of view name to search by
+        :param kwargs: additional params, usually for static files
+        :return: tuple containing (uri, Route)
+        """
+        if not view_name:
+            return None
+
+        route = self.name_index.get(view_name)
+        if not route:
+            full_name = self.ctx.app._generate_name(view_name)
+            route = self.name_index.get(full_name)
+
+        if not route:
+            return None
+
+        return route
+
+    @property
+    def routes_all(self):
+        return self.routes
+
+    @property
+    def routes_static(self):
+        return self.static_routes
+
+    @property
+    def routes_dynamic(self):
+        return self.dynamic_routes
+
+    @property
+    def routes_regex(self):
+        return self.regex_routes
+
+    def finalize(self, *args, **kwargs):
+        super().finalize(*args, **kwargs)
+
+        for route in self.dynamic_routes.values():
+            if any(
+                label.startswith("__") and label not in ALLOWED_LABELS
+                for label in route.labels
+            ):
+                raise SanicException(
+                    f"Invalid route: {route}. Parameter names cannot use '__'."
+                )
